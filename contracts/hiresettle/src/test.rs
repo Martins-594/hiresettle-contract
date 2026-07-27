@@ -3499,6 +3499,137 @@ fn test_get_engagements_first_page_ten() {
 }
 
 // ============================================================
+// Issue #36 — get_engagements_by_recruiter / get_recruiter_engagement_count
+// ============================================================
+
+#[test]
+fn test_recruiter_engagement_count_empty() {
+    let (env, contract_id, _token_id, _company, _recruiter, _arbiter) = setup();
+    let client = HireSettleContractClient::new(&env, &contract_id);
+    let other = Address::generate(&env);
+    assert_eq!(client.get_recruiter_engagement_count(&other), 0);
+}
+
+#[test]
+fn test_get_engagements_by_recruiter_insertion_order() {
+    let (env, contract_id, token_id, company, recruiter, arbiter) = setup();
+    let client = HireSettleContractClient::new(&env, &contract_id);
+
+    let ids = [
+        "ENG-R-ORD-0",
+        "ENG-R-ORD-1",
+        "ENG-R-ORD-2",
+        "ENG-R-ORD-3",
+        "ENG-R-ORD-4",
+    ];
+    for id in ids.iter() {
+        client.create_engagement(
+            &String::from_str(&env, id),
+            &company,
+            &recruiter,
+            &ArbiterSetup {
+                arbiters: vec![&env, arbiter.clone()],
+                quorum: 1,
+            },
+            &token_id,
+            &1_000_000_000,
+            &String::from_str(&env, "Engineer"),
+            &build_milestones(&env),
+            &vec![&env, 30u32, 90u32],
+            &default_config(),
+        );
+    }
+
+    assert_eq!(client.get_recruiter_engagement_count(&recruiter), 5);
+
+    let page0 = client.get_engagements_by_recruiter(&recruiter, &0, &3);
+    assert_eq!(page0.len(), 3);
+    assert_eq!(page0.get(0).unwrap(), String::from_str(&env, "ENG-R-ORD-0"));
+    assert_eq!(page0.get(2).unwrap(), String::from_str(&env, "ENG-R-ORD-2"));
+
+    let page1 = client.get_engagements_by_recruiter(&recruiter, &1, &3);
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page1.get(0).unwrap(), String::from_str(&env, "ENG-R-ORD-3"));
+}
+
+#[test]
+fn test_get_engagements_by_recruiter_out_of_range_returns_empty() {
+    let (env, contract_id, token_id, company, recruiter, arbiter) = setup();
+    let client = HireSettleContractClient::new(&env, &contract_id);
+
+    create_standard_engagement(
+        &env, &client, &token_id, &company, &recruiter, &arbiter, "ENG-R-OOR",
+    );
+
+    let result = client.get_engagements_by_recruiter(&recruiter, &10, &10);
+    assert_eq!(result.len(), 0);
+}
+
+#[test]
+fn test_get_engagements_by_recruiter_empty_recruiter() {
+    let (env, contract_id, _token_id, _company, _recruiter, _arbiter) = setup();
+    let client = HireSettleContractClient::new(&env, &contract_id);
+    let other = Address::generate(&env);
+    let result = client.get_engagements_by_recruiter(&other, &0, &10);
+    assert_eq!(result.len(), 0);
+}
+
+#[test]
+fn test_get_engagements_by_recruiter_multi_recruiter() {
+    let (env, contract_id, token_id, company, recruiter, arbiter) = setup();
+    let client = HireSettleContractClient::new(&env, &contract_id);
+    let other_recruiter = Address::generate(&env);
+
+    client.create_engagement(
+        &String::from_str(&env, "ENG-R-MULTI-A0"),
+        &company,
+        &recruiter,
+        &ArbiterSetup {
+            arbiters: vec![&env, arbiter.clone()],
+            quorum: 1,
+        },
+        &token_id,
+        &1_000_000_000,
+        &String::from_str(&env, "Engineer"),
+        &build_milestones(&env),
+        &vec![&env, 30u32, 90u32],
+        &default_config(),
+    );
+    client.create_engagement(
+        &String::from_str(&env, "ENG-R-MULTI-B0"),
+        &company,
+        &other_recruiter,
+        &ArbiterSetup {
+            arbiters: vec![&env, arbiter.clone()],
+            quorum: 1,
+        },
+        &token_id,
+        &1_000_000_000,
+        &String::from_str(&env, "Engineer"),
+        &build_milestones(&env),
+        &vec![&env, 30u32, 90u32],
+        &default_config(),
+    );
+
+    assert_eq!(client.get_recruiter_engagement_count(&recruiter), 1);
+    assert_eq!(client.get_recruiter_engagement_count(&other_recruiter), 1);
+
+    let recruiter_ids = client.get_engagements_by_recruiter(&recruiter, &0, &10);
+    assert_eq!(recruiter_ids.len(), 1);
+    assert_eq!(
+        recruiter_ids.get(0).unwrap(),
+        String::from_str(&env, "ENG-R-MULTI-A0")
+    );
+
+    let other_ids = client.get_engagements_by_recruiter(&other_recruiter, &0, &10);
+    assert_eq!(other_ids.len(), 1);
+    assert_eq!(
+        other_ids.get(0).unwrap(),
+        String::from_str(&env, "ENG-R-MULTI-B0")
+    );
+}
+
+// ============================================================
 // Issue #26 — Token allowlist
 // ============================================================
 
@@ -6783,4 +6914,139 @@ fn test_request_replacement_clears_in_flight_dispute_on_retention_milestone() {
     client.cast_arbiter_vote(&a1, &eng_id, &1, &true);
     let votes_second = client.get_arbiter_votes(&eng_id, &1);
     assert_eq!(votes_second.approve_votes, 1);
+}
+
+// ============================================================
+// Issue #140 — top_up_escrow test coverage
+// ============================================================
+
+#[test]
+fn test_top_up_escrow_increases_balance() {
+    let (env, contract_id, token_id, company, recruiter, arbiter) = setup();
+    let client = HireSettleContractClient::new(&env, &contract_id);
+    let eng_id = String::from_str(&env, "ENG-TOPUP-OK");
+    create_standard_engagement(
+        &env, &client, &token_id, &company, &recruiter, &arbiter, "ENG-TOPUP-OK",
+    );
+
+    let balance_before = client.get_escrow_balance(&eng_id);
+    client.top_up_escrow(&company, &eng_id, &500_000_000);
+    let balance_after = client.get_escrow_balance(&eng_id);
+
+    assert_eq!(balance_after, balance_before + 500_000_000);
+}
+
+#[test]
+#[should_panic(expected = "unauthorized")]
+fn test_top_up_escrow_non_company_rejected() {
+    let (env, contract_id, token_id, company, recruiter, arbiter) = setup();
+    let client = HireSettleContractClient::new(&env, &contract_id);
+    let eng_id = String::from_str(&env, "ENG-TOPUP-NONCO");
+    create_standard_engagement(
+        &env, &client, &token_id, &company, &recruiter, &arbiter, "ENG-TOPUP-NONCO",
+    );
+
+    client.top_up_escrow(&recruiter, &eng_id, &500_000_000);
+}
+
+#[test]
+fn test_top_up_escrow_emits_event_with_correct_payload() {
+    let (env, contract_id, token_id, company, recruiter, arbiter) = setup();
+    let client = HireSettleContractClient::new(&env, &contract_id);
+    let eng_id = String::from_str(&env, "ENG-TOPUP-EVT");
+    create_standard_engagement(
+        &env, &client, &token_id, &company, &recruiter, &arbiter, "ENG-TOPUP-EVT",
+    );
+
+    let total_before = client.get_engagement(&eng_id).total_amount;
+    client.top_up_escrow(&company, &eng_id, &500_000_000);
+
+    let expected = Symbol::new(&env, "escrow_topped_up");
+    let mut found = false;
+    for (_, topics, data) in env.events().all().iter() {
+        let topic: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+        if topic == expected {
+            let (amount, new_total): (i128, i128) = data.try_into_val(&env).unwrap();
+            assert_eq!(amount, 500_000_000);
+            assert_eq!(new_total, total_before + 500_000_000);
+            found = true;
+        }
+    }
+    assert!(found, "escrow_topped_up event was not emitted");
+}
+
+#[test]
+#[should_panic(expected = "amount must be greater than zero")]
+fn test_top_up_escrow_zero_amount_rejected() {
+    let (env, contract_id, token_id, company, recruiter, arbiter) = setup();
+    let client = HireSettleContractClient::new(&env, &contract_id);
+    let eng_id = String::from_str(&env, "ENG-TOPUP-ZERO");
+    create_standard_engagement(
+        &env, &client, &token_id, &company, &recruiter, &arbiter, "ENG-TOPUP-ZERO",
+    );
+
+    client.top_up_escrow(&company, &eng_id, &0);
+}
+
+#[test]
+#[should_panic(expected = "amount must be greater than zero")]
+fn test_top_up_escrow_negative_amount_rejected() {
+    let (env, contract_id, token_id, company, recruiter, arbiter) = setup();
+    let client = HireSettleContractClient::new(&env, &contract_id);
+    let eng_id = String::from_str(&env, "ENG-TOPUP-NEG");
+    create_standard_engagement(
+        &env, &client, &token_id, &company, &recruiter, &arbiter, "ENG-TOPUP-NEG",
+    );
+
+    client.top_up_escrow(&company, &eng_id, &-100);
+}
+
+// ============================================================
+// Issue #139 — set_min_amount / get_min_amount test coverage
+// ============================================================
+
+#[test]
+fn test_set_min_amount_admin_updates_floor() {
+    let (env, contract_id, _token_id, company, _recruiter, _arbiter) = setup();
+    let client = HireSettleContractClient::new(&env, &contract_id);
+
+    let new_min = 5_000_000;
+    client.set_min_amount(&company, &new_min);
+
+    assert_eq!(client.get_min_amount(), new_min);
+}
+
+#[test]
+#[should_panic(expected = "AmountBelowMinimum")]
+fn test_create_engagement_below_updated_min_amount_rejected() {
+    let (env, contract_id, token_id, company, recruiter, arbiter) = setup();
+    let client = HireSettleContractClient::new(&env, &contract_id);
+
+    let new_min = 5_000_000;
+    client.set_min_amount(&company, &new_min);
+
+    client.create_engagement(
+        &String::from_str(&env, "ENG-MINAMT-BELOW"),
+        &company,
+        &recruiter,
+        &ArbiterSetup {
+            arbiters: vec![&env, arbiter.clone()],
+            quorum: 1,
+        },
+        &token_id,
+        &(new_min - 1),
+        &String::from_str(&env, "Engineer"),
+        &build_milestones(&env),
+        &vec![&env, 30u32, 90u32],
+        &default_config(),
+    );
+}
+
+#[test]
+#[should_panic(expected = "unauthorized")]
+fn test_set_min_amount_non_admin_rejected() {
+    let (env, contract_id, _token_id, _company, recruiter, _arbiter) = setup();
+    let client = HireSettleContractClient::new(&env, &contract_id);
+
+    client.set_min_amount(&recruiter, &5_000_000);
 }

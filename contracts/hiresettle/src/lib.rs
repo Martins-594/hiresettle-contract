@@ -361,6 +361,8 @@ pub enum DataKey {
     EngagementCount,
     /// Per-company ordered list of engagement IDs (issue #35).
     CompanyEngagements(Address),
+    /// Per-recruiter ordered list of engagement IDs (issue #36).
+    RecruiterEngagements(Address),
     /// Allowlist of accepted token SAC addresses (issue #26).
     AllowedTokens,
     /// Whether the token allowlist is enabled (issue #26).
@@ -959,6 +961,23 @@ impl HireSettleContract {
             .set(&DataKey::CompanyEngagements(company.clone()), &company_ids);
         env.storage().persistent().extend_ttl(
             &DataKey::CompanyEngagements(company.clone()),
+            100_000,
+            6_300_000,
+        );
+
+        // Issue #36: append engagement_id to the per-recruiter index.
+        let mut recruiter_ids: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RecruiterEngagements(recruiter.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+        recruiter_ids.push_back(engagement_id.clone());
+        env.storage().persistent().set(
+            &DataKey::RecruiterEngagements(recruiter.clone()),
+            &recruiter_ids,
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::RecruiterEngagements(recruiter.clone()),
             100_000,
             6_300_000,
         );
@@ -2961,6 +2980,53 @@ impl HireSettleContract {
             .storage()
             .persistent()
             .get(&DataKey::CompanyEngagements(company))
+            .unwrap_or_else(|| Vec::new(&env));
+        ids.len()
+    }
+
+    // ----------------------------------------------------------
+    // ISSUE #36 — ENGAGEMENT LIST BY RECRUITER
+    // ----------------------------------------------------------
+
+    /// Return a paginated slice of engagement IDs for a given recruiter.
+    /// `page` is 0-indexed; out-of-range pages return an empty vec.
+    pub fn get_engagements_by_recruiter(
+        env: Env,
+        recruiter: Address,
+        page: u32,
+        page_size: u32,
+    ) -> Vec<String> {
+        let ids: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RecruiterEngagements(recruiter))
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let total = ids.len();
+        if page_size == 0 {
+            return Vec::new(&env);
+        }
+        // Use saturating arithmetic so a huge `page` / `page_size` combination
+        // clamps to an out-of-range start (caught below) instead of wrapping
+        // around via u32 overflow.
+        let start = page.saturating_mul(page_size);
+        if start >= total {
+            return Vec::new(&env);
+        }
+        let end = start.saturating_add(page_size).min(total);
+        let mut result = Vec::new(&env);
+        for i in start..end {
+            result.push_back(ids.get(i).unwrap());
+        }
+        result
+    }
+
+    /// Return the total number of engagements associated with a recruiter.
+    pub fn get_recruiter_engagement_count(env: Env, recruiter: Address) -> u32 {
+        let ids: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RecruiterEngagements(recruiter))
             .unwrap_or_else(|| Vec::new(&env));
         ids.len()
     }
